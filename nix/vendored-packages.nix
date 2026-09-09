@@ -122,8 +122,8 @@ let
       format = "wheel";
       src = pkgs.fetchurl { inherit url hash; };
       doCheck = false;
-      nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
-      buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+      nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+      buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.stdenv.cc.cc.lib ];
       autoPatchelfIgnoreMissingDeps = [ "libamdhip64.so.7" ];
     };
 in
@@ -202,74 +202,14 @@ rec {
         doCheck = false;
         # The wheel bundles native ANGLE libs (libEGL.so/libGLESv2.so) that need
         # their DT_NEEDED entries resolved against Nix store paths on Linux.
-        nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
-        buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+        nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+        buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.stdenv.cc.cc.lib
           pkgs.libx11
           pkgs.libxcb
           pkgs.libxext
         ];
       };
-
-  gradioClient = mkWheel {
-    pname = "gradio-client";
-    version = versions.vendored.gradioClient.version;
-    url = versions.vendored.gradioClient.url;
-    hash = versions.vendored.gradioClient.hash;
-    pythonRelaxDeps = [ "websockets" ];
-    propagatedBuildInputs = with python.pkgs; [
-      fsspec
-      httpx
-      huggingface-hub
-      packaging
-      typing-extensions
-      websockets
-    ];
-  };
-
-  gradio = mkWheel {
-    pname = "gradio";
-    version = versions.vendored.gradio.version;
-    url = versions.vendored.gradio.url;
-    hash = versions.vendored.gradio.hash;
-    pythonRelaxDeps = [
-      "aiofiles"
-      "pillow"
-      "pydantic"
-      "starlette"
-      "tomlkit"
-    ];
-    propagatedBuildInputs = with python.pkgs; [
-      aiofiles
-      anyio
-      brotli
-      fastapi
-      ffmpy
-      gradioClient
-      groovy
-      httpx
-      huggingface-hub
-      jinja2
-      markupsafe
-      numpy
-      orjson
-      packaging
-      pandas
-      pillow
-      pydantic
-      pydub
-      python-multipart
-      pyyaml
-      ruff
-      safehttpx
-      semantic-version
-      starlette
-      tomlkit
-      typer
-      typing-extensions
-      uvicorn
-    ];
-  };
 
   sageattention = mkWheel {
     pname = "sageattention";

@@ -1,5 +1,5 @@
 {
-  description = "A Nix flake for ComfyUI v0.30.0 with Python 3.12";
+  description = "A Nix flake for ComfyUI with Python 3.12";
 
   nixConfig = {
     extra-substituters = [
@@ -29,13 +29,15 @@
       versions = import ./nix/versions.nix;
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
-      # Supported systems: Linux (x86_64, aarch64), macOS (Intel, Apple Silicon)
+      # Supported systems: Linux (x86_64, aarch64), macOS (Apple Silicon)
       # Note: CUDA support is only available on x86_64-linux
       # Note: ROCm support is only available on x86_64-linux
+      # Note: x86_64-darwin is absent because nixpkgs 26.11 dropped Intel macOS;
+      # declaring it makes every output for that system fail to evaluate.
+      # https://nixos.org/manual/nixpkgs/unstable/release-notes#x86_64-darwin-26.11
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
 
@@ -193,10 +195,10 @@
             dockerImageLinuxXpu = linuxX86PackagesXpu.dockerImageXpu;
             dockerImageLinuxArm64 = linuxArm64Packages.dockerImage;
           }
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             dockerImage = nativePackages.dockerImage;
           }
-          // pkgs.lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
+          // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
             # CUDA package uses pre-built wheels for all supported GPU architectures
             cuda = nativePackagesCuda.default;
             dockerImageCuda = nativePackagesCuda.dockerImageCuda;
@@ -229,7 +231,7 @@
                     pkgs.libGL
                     pkgs.libGLU
                     pkgs.git
-                    pkgs.nixfmt-rfc-style
+                    pkgs.nixfmt
                     pkgs.ruff
                     pkgs.pyright
                     pkgs.shellcheck
@@ -238,12 +240,12 @@
                     pkgs.python3Packages.pytest
 
                   ]
-                  ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.apple-sdk_14 ];
+                  ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.apple-sdk_14 ];
 
                   shellHook =
                     let
                       defaultDir =
-                        if pkgs.stdenv.isDarwin then
+                        if pkgs.stdenv.hostPlatform.isDarwin then
                           "$HOME/Library/Application Support/comfy-ui"
                         else
                           "$HOME/.config/comfy-ui";
@@ -263,7 +265,35 @@
               rocm = buildShell nativePackagesRocm.pythonRuntime;
             };
 
-          formatter = pkgs.nixfmt-rfc-style;
+          # nixfmt >= 1.4.0 reads stdin when invoked bare, so binding the
+          # formatter to the raw package makes `nix fmt` a silent no-op. Wrap it
+          # in the same find-based invocation the `nixfmt` check uses so the two
+          # cannot drift apart again.
+          formatter = pkgs.writeShellApplication {
+            name = "nixfmt-tree";
+            runtimeInputs = [
+              pkgs.nixfmt
+              pkgs.findutils
+            ];
+            text = ''
+              # `nix fmt` forwards user flags alongside paths (e.g.
+              # `nix fmt -- --check .`). Split them so flags reach nixfmt and
+              # only paths reach find.
+              opts=()
+              paths=()
+              for arg in "$@"; do
+                case "$arg" in
+                  -*) opts+=("$arg") ;;
+                  *) paths+=("$arg") ;;
+                esac
+              done
+              if [ ''${#paths[@]} -eq 0 ]; then
+                paths=(.)
+              fi
+              find "''${paths[@]}" -name '*.nix' -type f \
+                -exec nixfmt ''${opts[@]+"''${opts[@]}"} {} +
+            '';
+          };
 
           checks = import ./nix/checks.nix {
             inherit
@@ -295,19 +325,19 @@
           comfy-ui = self.packages.${final.stdenv.hostPlatform.system}.default;
           # CUDA variant (x86_64 Linux only) - uses pre-built wheels for all supported GPU architectures
           comfy-ui-cuda =
-            if final.stdenv.isLinux && final.stdenv.isx86_64 then
+            if final.stdenv.hostPlatform.isLinux && final.stdenv.hostPlatform.isx86_64 then
               self.packages.${final.stdenv.hostPlatform.system}.cuda
             else
               throw "comfy-ui-cuda is only available on x86_64 Linux";
           # ROCm variant (x86_64 Linux only) - uses pre-built wheels supporting all GPU architectures
           comfy-ui-rocm =
-            if final.stdenv.isLinux && final.stdenv.isx86_64 then
+            if final.stdenv.hostPlatform.isLinux && final.stdenv.hostPlatform.isx86_64 then
               self.packages.${final.stdenv.hostPlatform.system}.rocm
             else
               throw "comfy-ui-rocm is only available on x86_64 Linux";
           # Intel XPU variant (x86_64 Linux only) - pre-built wheels from pytorch.org/whl/xpu
           comfy-ui-xpu =
-            if final.stdenv.isLinux && final.stdenv.isx86_64 then
+            if final.stdenv.hostPlatform.isLinux && final.stdenv.hostPlatform.isx86_64 then
               self.packages.${final.stdenv.hostPlatform.system}.xpu
             else
               throw "comfy-ui-xpu is only available on x86_64 Linux";
