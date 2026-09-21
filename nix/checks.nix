@@ -303,7 +303,10 @@ in
               ${packages.default.customNodes.rgthree-comfy}/web/comfyui/label.js
 
             PYTHONPATH=${packages.default.comfyuiSrc} ${pythonRuntime}/bin/python - <<'PY'
+            import importlib
             import importlib.util
+            import json
+            from pathlib import Path
             import sys
 
             import kornia
@@ -316,17 +319,55 @@ in
             assert kornia.__version__
             assert kornia_rs.__file__
 
-            ltxvideo_path = "${packages.default.customNodes.ltxvideo}"
+            ltxvideo_path = Path("${packages.default.customNodes.ltxvideo}")
             spec = importlib.util.spec_from_file_location(
                 "comfyui_ltxvideo",
-                f"{ltxvideo_path}/__init__.py",
-                submodule_search_locations=[ltxvideo_path],
+                ltxvideo_path / "__init__.py",
+                submodule_search_locations=[str(ltxvideo_path)],
             )
             assert spec and spec.loader
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
             spec.loader.exec_module(module)
             assert module.NODE_CLASS_MAPPINGS
+
+            # ComfyUI 0.37 uses the new freqs_cis_matrix RoPE API.  The bundled
+            # LTXVideo node must take that path rather than relying on the removed
+            # interleaved_freqs_cis/split_freqs_cis core helpers.
+            embeddings_connector = importlib.import_module(
+                "comfyui_ltxvideo.embeddings_connector"
+            )
+            assert embeddings_connector._USE_FREQS_CIS_MATRIX is True
+
+            # Guard the LTX-2.5 family as ComfyUI core moves forward: every
+            # LTX-prefixed node referenced by the shipped 2.5 workflows must
+            # still exist in the bundled custom node's registry. This covers
+            # T2V/I2V plus derivative IC-LoRA/control/audio workflows without
+            # requiring multi-gigabyte model weights in CI.
+            workflows = ltxvideo_path / "example_workflows" / "2.5"
+            assert workflows.is_dir()
+            workflow_files = list(workflows.glob("*.json"))
+            assert workflow_files, "bundled LTX-2.5 workflows disappeared"
+
+            referenced_ltx_nodes = set()
+
+            def walk(value):
+                if isinstance(value, dict):
+                    node_type = value.get("type")
+                    if isinstance(node_type, str) and node_type.startswith("LTX"):
+                        referenced_ltx_nodes.add(node_type)
+                    for child in value.values():
+                        walk(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        walk(child)
+
+            for workflow in workflow_files:
+                with workflow.open() as f:
+                    walk(json.load(f))
+
+            missing = referenced_ltx_nodes - set(module.NODE_CLASS_MAPPINGS)
+            assert not missing, f"LTX-2.5 workflows reference missing nodes: {sorted(missing)}"
             PY
             touch $out
           '';
