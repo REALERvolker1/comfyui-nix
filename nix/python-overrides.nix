@@ -923,6 +923,22 @@ lib.optionalAttrs useCuda {
       prev.av;
 }
 
+# einops only needs Jupyter/nbconvert for scripts/test_notebooks.py, but nixpkgs
+# already disables the entire scripts/ test path. Keeping those nativeCheckInputs
+# needlessly pulls JupyterLab/Jupyter Server into every ComfyUI Python build and
+# exposes unrelated flaky Jupyter tests on local builders.
+ // lib.optionalAttrs (prev ? einops) {
+  einops = prev.einops.overridePythonAttrs (old: {
+    nativeCheckInputs = builtins.filter (
+      dep:
+      let
+        name = lib.getName dep;
+      in
+      !(name == "jupyter" || lib.hasSuffix "-jupyter" name || name == "nbconvert" || lib.hasSuffix "-nbconvert" name)
+    ) (old.nativeCheckInputs or [ ]);
+  });
+}
+
 # Disable tests for open-clip-torch (they hang waiting for model downloads)
 // lib.optionalAttrs (prev ? open-clip-torch) {
   open-clip-torch = prev.open-clip-torch.overridePythonAttrs (old: {
