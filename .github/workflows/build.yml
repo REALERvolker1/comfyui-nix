@@ -57,6 +57,9 @@ jobs:
           nix build .#checks.x86_64-linux.nixfmt --print-build-logs
           nix build .#checks.x86_64-linux.shellcheck --print-build-logs
           nix build .#checks.x86_64-linux.pytest --print-build-logs
+          # Import bundled custom nodes against this exact ComfyUI core. This
+          # includes explicit LTX-2.5/RoPE compatibility regression guards.
+          nix build .#checks.x86_64-linux.comfy-extras-imports --print-build-logs
 
   # Exercise package metadata against the runtime dependency hook. The flake's
   # own nixpkgs now has the hook enabled by default, so these build against the
