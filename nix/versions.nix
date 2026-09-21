@@ -3,7 +3,7 @@
     version = "0.37.0";
     releaseDate = "2026-09-20T15:27:36Z";
     rev = "73c9bad4d21e7addbe1d13bc92eee0f1431b017d";
-    hash = "sha256-hfpoQsu8xzKHCy2d90Qqw2BMGsorwizJEuhKXWjUUJzTHs=";
+    hash = "sha256-hfpoQsu8xzKHCy2Qqw2BMGsorwizJEuhKXWjUUJzTHs=";
   };
 
   vendored = {
