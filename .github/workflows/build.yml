@@ -28,31 +28,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Temporary while updating upstream pins: emit the exact SRI hashes Nix needs.
-  # Remove this job once nix/versions.nix no longer contains fake hashes.
-  hash-probe:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Prefetch updated fixed-output inputs
-        run: |
-          set -euxo pipefail
-          echo '=== ComfyUI 0.37.0 source (recursive/unpacked) ==='
-          nix store prefetch-file --json --unpack \
-            https://github.com/Comfy-Org/ComfyUI/archive/73c9bad4d21e7addbe1d13bc92eee0f1431b017d.tar.gz
-
-          echo '=== workflow templates JSON 0.1.92 wheel ==='
-          nix store prefetch-file --json \
-            https://files.pythonhosted.org/packages/py3/c/comfyui_workflow_templates_json/comfyui_workflow_templates_json-0.1.92-py3-none-any.whl
-
-          echo '=== workflow templates media-assets-01 0.1.47 wheel ==='
-          nix store prefetch-file --json \
-            https://files.pythonhosted.org/packages/py3/c/comfyui_workflow_templates_media_assets_01/comfyui_workflow_templates_media_assets_01-0.1.47-py3-none-any.whl
-
   # Fast lint + test job — runs on every PR and push
   lint:
     runs-on: ubuntu-latest
