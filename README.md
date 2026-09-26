@@ -177,14 +177,14 @@ ComfyUI's standard installation relies on pip and manual dependency management, 
 nix run github:utensils/comfyui-nix#cuda -- --enable-manager
 ```
 
-**How it stays pure:** The Nix store remains read-only. When custom nodes require additional Python dependencies, they install into a PEP 405 venv at `<data-directory>/.venv/` instead of the Nix store. ComfyUI itself runs through that venv with `include-system-site-packages = true`, while startup ordering keeps the Nix package set ahead of the mutable overlay.
+**How it stays pure:** The Nix store remains read-only. When custom nodes require additional Python dependencies, they install into a PEP 405 venv at `<data-directory>/.venv/` instead of the Nix store. ComfyUI itself runs through that venv, while the packaged Nix runtime site-packages are explicitly bridged onto `PYTHONPATH`; startup ordering keeps the Nix package set ahead of the mutable overlay.
 
 ```
 Nix packages (read-only):     torch, torchvision, torchaudio, CUDA/cuDNN, numpy, ...
 Runtime packages (mutable):   <data-directory>/.venv/
 ```
 
-Manager uses pip by default because pip can satisfy requirements from the inherited Nix package set. uv is still available to custom nodes, but is restricted to system/Nix Python interpreters (`UV_PYTHON_PREFERENCE=only-system`, downloads disabled); uv currently does not reliably treat inherited system-site packages as installed dependencies. The accelerator stack is exact-constrained to the Nix versions, and stale Manager-installed Torch/NVIDIA CUDA packages are removed on startup so a transitive dependency cannot introduce a second CUDA/cuDNN runtime.
+Manager uses pip by default because pip can satisfy requirements from the bridged Nix package set. uv is still available to custom nodes, but is restricted to system/Nix Python interpreters (`UV_PYTHON_PREFERENCE=only-system`, downloads disabled); uv currently does not reliably treat packages inherited from outside its target venv as installed dependencies. The accelerator stack is exact-constrained to the Nix versions, and stale Manager-installed Torch/NVIDIA CUDA packages are removed on startup so a transitive dependency cannot introduce a second CUDA/cuDNN runtime.
 
 Set `COMFY_VENV_PRECEDENCE=prefer-venv` if you intentionally want mutable Python packages to override the Nix package set. Set `COMFY_VENV_ALLOW_ACCELERATOR_OVERRIDES=1` to opt out of the accelerator cleanup, or `COMFY_MANAGER_USE_UV=true` to force Manager back to uv (not recommended with the layered Nix runtime).
 
