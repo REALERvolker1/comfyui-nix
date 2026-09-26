@@ -184,8 +184,8 @@ let
     [default]
     security_level = normal
     network_mode = personal_cloud
-    # Manager's pip path can reuse the Nix runtime through
-    # include-system-site-packages. uv currently resolves inherited system
+    # Manager's pip path can reuse the Nix runtime through the layered venv's
+    # explicit Nix site-packages bridge. uv currently resolves inherited/external
     # packages as if they were absent, which can duplicate torch/CUDA in .venv.
     use_uv = false
   '';
@@ -657,27 +657,31 @@ let
             # Set platform-specific library paths for GPU support
             ${libraryPathSetup}
 
-            # Create a mutable PEP 405 venv layered on the immutable Nix Python
-            # runtime. ComfyUI itself is launched through this venv below, so
-            # Manager's sys.executable points here and ordinary pip installs land
-            # in the writable overlay without PIP_TARGET.
+            # Create a real mutable PEP 405 venv using the same Nix Python
+            # interpreter as the packaged runtime. The immutable package set is
+            # bridged in explicitly below; mutable packages live only in .venv.
+            # ComfyUI itself is launched through this venv so Manager's
+            # sys.executable points at the writable environment.
             VENV_DIR="$BASE_DIR/.venv"
             SITE_PACKAGES="$VENV_DIR/lib/python3.12/site-packages"
+            NIX_SITE_PACKAGES="${pythonRuntime}/${python.sitePackages}"
             mkdir -p "$SITE_PACKAGES" "$VENV_DIR/bin"
 
             # Rewrite these on every launch. Nix store paths and Python patch
             # versions can change after a flake update, so stale symlinks/config
             # must never keep a Manager venv tied to an old generation.
             cat > "$VENV_DIR/pyvenv.cfg" << PYVENV
-      home = ${pythonRuntime}/bin
-      include-system-site-packages = true
+      home = ${python}/bin
+      include-system-site-packages = false
       version = ${python.version}
+      executable = ${python}/bin/python
       PYVENV
-            ln -sfn "${pythonRuntime}/bin/python" "$VENV_DIR/bin/python"
-            ln -sfn "${pythonRuntime}/bin/python3" "$VENV_DIR/bin/python3"
-            ln -sfn "${pythonRuntime}/bin/python3.12" "$VENV_DIR/bin/python3.12"
+            ln -sfn "${python}/bin/python" "$VENV_DIR/bin/python"
+            ln -sfn "${python}/bin/python3" "$VENV_DIR/bin/python3"
+            ln -sfn "${python}/bin/python3.12" "$VENV_DIR/bin/python3.12"
 
             export VIRTUAL_ENV="$VENV_DIR"
+            export COMFY_NIX_SITE_PACKAGES="$NIX_SITE_PACKAGES"
 
             # Do not let uv download/manage another interpreter. If a custom node
             # invokes uv directly it must use the Nix-provided Python generation.
@@ -737,39 +741,37 @@ let
             ''}
 
             # Ensure Nix-provided packages take precedence over anything installed by the Manager.
-            # Some setups (e.g. a long-lived ~/AI directory) may already have pip-installed
-            # torch/numpy/etc in $VENV_DIR, which can conflict with our pinned, known-good stack.
-            #
-            # Default behavior: append the venv site-packages to sys.path (so it only fills gaps).
-            # If you *really* want the venv to override Nix packages, set:
+            # The Nix runtime site-packages is placed on PYTHONPATH so pip running
+            # inside the real venv sees those distributions as already installed.
+            # The writable venv remains later on sys.path and only fills gaps.
+            # If you intentionally want the venv to override Nix packages, set:
             #   COMFY_VENV_PRECEDENCE=prefer-venv
             SITE_CUSTOMIZE_DIR="$BASE_DIR/.comfyui_sitecustomize"
             mkdir -p "$SITE_CUSTOMIZE_DIR"
-            # Create a tiny sitecustomize.py. We use this (instead of putting the venv
-            # site-packages directly on PYTHONPATH) so the venv only fills missing deps by default.
             {
               printf '%s\n' \
                 'import os' \
                 'import site' \
                 'import sys' \
                 ' ' \
+                'nix_sp = os.environ.get("COMFY_NIX_SITE_PACKAGES")' \
+                'if nix_sp and os.path.isdir(nix_sp):' \
+                '    # Process any .pth files shipped by Nix Python packages too.' \
+                '    site.addsitedir(nix_sp)' \
                 'precedence = os.environ.get("COMFY_VENV_PRECEDENCE", "")' \
                 'venv = os.environ.get("VIRTUAL_ENV")' \
                 'if venv:' \
                 '    sp = os.path.join(venv, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")' \
                 '    if os.path.isdir(sp):' \
-                '        # A real venv adds its site-packages before system packages.' \
-                '        # Remove it first so the policy below can deterministically reorder it.' \
                 '        while sp in sys.path:' \
                 '            sys.path.remove(sp)' \
                 '        if precedence == "prefer-venv":' \
                 '            sys.path.insert(0, sp)' \
                 '        else:' \
-                '            # Default: Nix/system packages win; mutable packages only fill gaps.' \
                 '            sys.path.append(sp)'
             } > "$SITE_CUSTOMIZE_DIR/sitecustomize.py"
 
-            export PYTHONPATH="$SITE_CUSTOMIZE_DIR''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="$SITE_CUSTOMIZE_DIR:$NIX_SITE_PACKAGES''${PYTHONPATH:+:$PYTHONPATH}"
 
             # mergekit (used by lora-merger-comfyui) uses pydantic.create_model with torch.Tensor
             # without allowing arbitrary types, which crashes under pydantic v2.
