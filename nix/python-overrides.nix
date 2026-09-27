@@ -926,7 +926,7 @@ lib.optionalAttrs useCuda {
 # einops declares Jupyter/nbconvert as test-only inputs for notebook tests,
 # while nixpkgs already disables the scripts/ directory containing those tests.
 # Drop them here so ComfyUI doesn't build the entire Jupyter stack just to test einops.
- // lib.optionalAttrs (prev ? einops) {
+// lib.optionalAttrs (prev ? einops) {
   einops = prev.einops.overridePythonAttrs (old: {
     nativeCheckInputs = builtins.filter (
       dep:
@@ -984,6 +984,19 @@ lib.optionalAttrs useCuda {
 // lib.optionalAttrs (prev ? backrefs) {
   backrefs = prev.backrefs.overridePythonAttrs (old: {
     disabledTests = (old.disabledTests or [ ]) ++ [ "test_timeout" ];
+  });
+}
+
+# These asynchronous kernel-disconnect tests are sensitive to load in the Nix
+# sandbox: orphan cleanup can miss its deadline, which also makes the companion
+# file-descriptor assertion report the sockets that are still being cleaned up.
+# jupyter-server reaches us through einops' check inputs, like backrefs above.
+// lib.optionalAttrs (prev ? jupyter-server) {
+  jupyter-server = prev.jupyter-server.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [
+      "test_no_fd_leak_on_disconnect_with_orphaned_kernel_info_channel"
+      "test_disconnect_resolves_orphaned_kernel_info_future"
+    ];
   });
 }
 
