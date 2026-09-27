@@ -923,6 +923,21 @@ lib.optionalAttrs useCuda {
       prev.av;
 }
 
+# einops declares Jupyter/nbconvert as test-only inputs for notebook tests,
+# while nixpkgs already disables the scripts/ directory containing those tests.
+# Drop them here so ComfyUI doesn't build the entire Jupyter stack just to test einops.
+ // lib.optionalAttrs (prev ? einops) {
+  einops = prev.einops.overridePythonAttrs (old: {
+    nativeCheckInputs = builtins.filter (
+      dep:
+      let
+        name = lib.getName dep;
+      in
+      !(name == "jupyter" || lib.hasSuffix "-jupyter" name || name == "nbconvert" || lib.hasSuffix "-nbconvert" name)
+    ) (old.nativeCheckInputs or [ ]);
+  });
+}
+
 # Disable tests for open-clip-torch (they hang waiting for model downloads)
 // lib.optionalAttrs (prev ? open-clip-torch) {
   open-clip-torch = prev.open-clip-torch.overridePythonAttrs (old: {

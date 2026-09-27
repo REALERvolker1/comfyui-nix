@@ -142,8 +142,14 @@ let
     # Prevents pip/uv from overwriting Nix-provided packages with incompatible versions
     huggingface-hub<2.0
     transformers>=4.50.3
-    torch>=2.0.0
-    torchvision>=0.15.0
+    # The mutable Manager environment must use the same accelerator stack as
+    # the Nix runtime. Loose lower bounds here let transitive requirements such
+    # as qwen-tts -> torchaudio resolve a second PyPI torch/CUDA/cuDNN stack.
+    torch==${python.pkgs.torch.version}
+    torchvision==${python.pkgs.torchvision.version}
+    torchaudio==${python.pkgs.torchaudio.version}
+    ${lib.optionalString (python.pkgs ? torchsde) "torchsde==${python.pkgs.torchsde.version}"}
+    ${lib.optionalString (python.pkgs ? triton) "triton==${python.pkgs.triton.version}"}
     numpy>=1.25.0
     pillow>=9.0.0
     safetensors>=0.4.2
@@ -178,6 +184,10 @@ let
     [default]
     security_level = normal
     network_mode = personal_cloud
+    # Manager's pip path can reuse the Nix runtime through the layered venv's
+    # explicit Nix site-packages bridge. uv currently resolves inherited/external
+    # packages as if they were absent, which can duplicate torch/CUDA in .venv.
+    use_uv = false
   '';
 
   pythonRuntime = python.withPackages (
@@ -647,67 +657,121 @@ let
             # Set platform-specific library paths for GPU support
             ${libraryPathSetup}
 
-            # Create a mutable PEP 405 venv structure for ComfyUI-Manager package installs
-            # This allows both pip and uv to install packages to a writable location
-            # while keeping the Nix store read-only
+            # Create a real mutable PEP 405 venv using the same Nix Python
+            # interpreter as the packaged runtime. The immutable package set is
+            # bridged in explicitly below; mutable packages live only in .venv.
+            # ComfyUI itself is launched through this venv so Manager's
+            # sys.executable points at the writable environment.
             VENV_DIR="$BASE_DIR/.venv"
             SITE_PACKAGES="$VENV_DIR/lib/python3.12/site-packages"
-            mkdir -p "$SITE_PACKAGES"
-            mkdir -p "$VENV_DIR/bin"
+            NIX_SITE_PACKAGES="${pythonRuntime}/${python.sitePackages}"
+            mkdir -p "$SITE_PACKAGES" "$VENV_DIR/bin"
 
-            # Create pyvenv.cfg if it doesn't exist (required for PEP 405 compliance)
-            if [[ ! -e "$VENV_DIR/pyvenv.cfg" ]]; then
-              cat > "$VENV_DIR/pyvenv.cfg" << PYVENV
-      home = ${pythonRuntime}/bin
-      include-system-site-packages = true
-      version = 3.12.9
+            # Rewrite these on every launch. Nix store paths and Python patch
+            # versions can change after a flake update, so stale symlinks/config
+            # must never keep a Manager venv tied to an old generation.
+            cat > "$VENV_DIR/pyvenv.cfg" << PYVENV
+      home = ${python}/bin
+      include-system-site-packages = false
+      version = ${python.version}
+      executable = ${python}/bin/python
       PYVENV
-            fi
+            ln -sfn "${python}/bin/python" "$VENV_DIR/bin/python"
+            ln -sfn "${python}/bin/python3" "$VENV_DIR/bin/python3"
+            ln -sfn "${python}/bin/python3.12" "$VENV_DIR/bin/python3.12"
 
-            # Symlink Python executable into venv bin (some tools expect this)
-            if [[ ! -e "$VENV_DIR/bin/python" ]]; then
-              ln -sf "${pythonRuntime}/bin/python" "$VENV_DIR/bin/python"
-              ln -sf "${pythonRuntime}/bin/python3" "$VENV_DIR/bin/python3"
-              ln -sf "${pythonRuntime}/bin/python3.12" "$VENV_DIR/bin/python3.12"
-            fi
-
-            # Set VIRTUAL_ENV so uv installs to our mutable venv instead of Nix store
             export VIRTUAL_ENV="$VENV_DIR"
+            export COMFY_NIX_SITE_PACKAGES="$NIX_SITE_PACKAGES"
 
-            # Also set PIP_TARGET for pip compatibility
-            export PIP_TARGET="$SITE_PACKAGES"
+            # Do not let uv download/manage another interpreter. If a custom node
+            # invokes uv directly it must use the Nix-provided Python generation.
+            export UV_PYTHON_PREFERENCE="only-system"
+            export UV_PYTHON_DOWNLOADS="never"
+
+            # ComfyUI-Manager defaults to pip here because pip honors
+            # include-system-site-packages while uv currently does not reliably
+            # use inherited packages to satisfy dependency resolution. Keep uv
+            # available for nodes that explicitly call it, but don't let Manager
+            # recreate Nix-owned torch/CUDA packages through it.
+            MANAGER_USE_UV="''${COMFY_MANAGER_USE_UV:-false}"
+            if grep -Eq '^[[:space:]]*use_uv[[:space:]]*=' "$MANAGER_CONFIG"; then
+              sed -i -E "s/^[[:space:]]*use_uv[[:space:]]*=.*/use_uv = $MANAGER_USE_UV/" "$MANAGER_CONFIG"
+            else
+              sed -i "/^\\[default\\]/a use_uv = $MANAGER_USE_UV" "$MANAGER_CONFIG"
+            fi
+
+            # Repair old Manager environments that contain a second accelerator
+            # stack. This is intentionally limited to packages that must be owned
+            # by Nix; unrelated custom-node dependencies remain untouched.
+            if [[ "''${COMFY_VENV_ALLOW_ACCELERATOR_OVERRIDES:-0}" != "1" ]]; then
+              rm -rf \
+                "$SITE_PACKAGES/torch" \
+                "$SITE_PACKAGES/torchgen" \
+                "$SITE_PACKAGES/functorch" \
+                "$SITE_PACKAGES/torchaudio" \
+                "$SITE_PACKAGES/torchvision" \
+                "$SITE_PACKAGES/torchsde" \
+                "$SITE_PACKAGES/triton" \
+                "$SITE_PACKAGES/nvidia" \
+                "$SITE_PACKAGES/cuda"
+              find "$SITE_PACKAGES" -maxdepth 1 -type d \
+                \( -name 'torch-*.dist-info' \
+                   -o -name 'torchaudio-*.dist-info' \
+                   -o -name 'torchvision-*.dist-info' \
+                   -o -name 'torchsde-*.dist-info' \
+                   -o -name 'triton-*.dist-info' \
+                   -o -name 'nvidia_*.dist-info' \
+                   -o -name 'cuda_*.dist-info' \) \
+                ! -name 'nvidia_vfx-*.dist-info' \
+                -exec rm -rf {} +
+              rm -f "$VENV_DIR/bin/torchrun" "$VENV_DIR/bin/torchfrtrace" 2>/dev/null || true
+            fi
+
+            ${lib.optionalString useCuda ''
+              # nvidia-vfx bundles a private libcudnn.so.9 but relies on other
+              # cuDNN sublibraries from the process search path. Mixing that
+              # private version with nixpkgs' cuDNN produces
+              # CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED. Make its base library use
+              # the same Nix cuDNN family as PyTorch.
+              NVVFX_CUDNN="$SITE_PACKAGES/nvvfx/libs/libcudnn.so.9"
+              if [[ -e "$NVVFX_CUDNN" || -L "$NVVFX_CUDNN" ]]; then
+                rm -f "$NVVFX_CUDNN"
+                ln -s "${lib.getLib cudaPackages.cudnn}/lib/libcudnn.so.9" "$NVVFX_CUDNN"
+              fi
+            ''}
 
             # Ensure Nix-provided packages take precedence over anything installed by the Manager.
-            # Some setups (e.g. a long-lived ~/AI directory) may already have pip-installed
-            # torch/numpy/etc in $VENV_DIR, which can conflict with our pinned, known-good stack.
-            #
-            # Default behavior: append the venv site-packages to sys.path (so it only fills gaps).
-            # If you *really* want the venv to override Nix packages, set:
+            # The Nix runtime site-packages is placed on PYTHONPATH so pip running
+            # inside the real venv sees those distributions as already installed.
+            # The writable venv remains later on sys.path and only fills gaps.
+            # If you intentionally want the venv to override Nix packages, set:
             #   COMFY_VENV_PRECEDENCE=prefer-venv
             SITE_CUSTOMIZE_DIR="$BASE_DIR/.comfyui_sitecustomize"
             mkdir -p "$SITE_CUSTOMIZE_DIR"
-            # Create a tiny sitecustomize.py. We use this (instead of putting the venv
-            # site-packages directly on PYTHONPATH) so the venv only fills missing deps by default.
             {
               printf '%s\n' \
                 'import os' \
                 'import site' \
                 'import sys' \
                 ' ' \
+                'nix_sp = os.environ.get("COMFY_NIX_SITE_PACKAGES")' \
+                'if nix_sp and os.path.isdir(nix_sp):' \
+                '    # Process any .pth files shipped by Nix Python packages too.' \
+                '    site.addsitedir(nix_sp)' \
                 'precedence = os.environ.get("COMFY_VENV_PRECEDENCE", "")' \
                 'venv = os.environ.get("VIRTUAL_ENV")' \
                 'if venv:' \
                 '    sp = os.path.join(venv, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")' \
                 '    if os.path.isdir(sp):' \
+                '        while sp in sys.path:' \
+                '            sys.path.remove(sp)' \
                 '        if precedence == "prefer-venv":' \
-                '            # Make venv take priority (old behavior)' \
                 '            sys.path.insert(0, sp)' \
                 '        else:' \
-                '            # Default: add venv at the end so Nix packages win' \
-                '            site.addsitedir(sp)'
+                '            sys.path.append(sp)'
             } > "$SITE_CUSTOMIZE_DIR/sitecustomize.py"
 
-            export PYTHONPATH="$SITE_CUSTOMIZE_DIR''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="$SITE_CUSTOMIZE_DIR:$NIX_SITE_PACKAGES''${PYTHONPATH:+:$PYTHONPATH}"
 
             # mergekit (used by lora-merger-comfyui) uses pydantic.create_model with torch.Tensor
             # without allowing arbitrary types, which crashes under pydantic v2.
@@ -722,7 +786,9 @@ let
               fi
             fi
 
-            # Prevent pip/uv from installing packages that conflict with Nix-provided ones
+            # Keep mutable installs compatible with the Nix-owned runtime. The
+            # accelerator packages above are exact-pinned so transitive
+            # requirements cannot silently resolve a newer PyPI CUDA stack.
             export PIP_CONSTRAINT="${pipConstraints}"
             export UV_CONSTRAINT="${pipConstraints}"
 
@@ -864,8 +930,10 @@ let
               (sleep 3 && ${browserCommand} "http://127.0.0.1:$PORT" 2>/dev/null) &
             fi
 
-            # Run ComfyUI directly from Nix store
-            exec "${pythonRuntime}/bin/python" "${comfyuiSrc}/main.py" \
+            # Run ComfyUI through the layered venv. Its interpreter is the
+            # Nix runtime above, but sys.prefix/sys.executable now identify the
+            # writable Manager environment and pip installs stay out of /nix/store.
+            exec "$VENV_DIR/bin/python" "${comfyuiSrc}/main.py" \
               --base-directory "$BASE_DIR" \
               --front-end-root "${frontendRoot}" \
               --database-url "sqlite:///$BASE_DIR/user/comfyui.db" \
