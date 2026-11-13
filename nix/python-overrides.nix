@@ -992,6 +992,15 @@ lib.optionalAttrs useCuda {
   });
 }
 
+# portalocker's multiprocessing lock tests use a hard-coded 1.5-second deadline.
+# Under load in the Nix sandbox, both parameterizations can time out even
+# when the rest of the suite passes. Keep all other portalocker tests enabled.
+// lib.optionalAttrs (prev ? portalocker) {
+  portalocker = prev.portalocker.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_shared_processes" ];
+  });
+}
+
 # backrefs' test_timeout asserts that a regex operation exceeds a wall-clock
 # timeout, which does not hold on every builder: it passes locally but fails
 # on CI runners with "DID NOT RAISE TimeoutError". backrefs is not in the
