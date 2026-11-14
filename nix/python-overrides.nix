@@ -1001,6 +1001,14 @@ lib.optionalAttrs useCuda {
   });
 }
 
+# pydevd's console test tries to connect to a local server and can fail with
+# ConnectionRefusedError inside the Nix sandbox. Keep the other checks enabled.
+// lib.optionalAttrs (prev ? pydevd) {
+  pydevd = prev.pydevd.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_server" ];
+  });
+}
+
 # backrefs' test_timeout asserts that a regex operation exceeds a wall-clock
 # timeout, which does not hold on every builder: it passes locally but fails
 # on CI runners with "DID NOT RAISE TimeoutError". backrefs is not in the
