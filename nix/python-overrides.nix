@@ -1009,6 +1009,19 @@ lib.optionalAttrs useCuda {
   });
 }
 
+# narwhals' nixpkgs checks include every optional backend in nativeCheckInputs.
+# This pulls the sqlframe -> pytest-postgresql -> psycopg -> pproxy -> asyncssh
+# test-only chain into ComfyUI's build (asyncssh's SFTP tests alone take 25m).
+# Skip narwhals' optional-backend tests and do not build their check inputs;
+# runtime dependencies and the package's build-system remain unchanged.
+// lib.optionalAttrs (prev ? narwhals) {
+  narwhals = prev.narwhals.overridePythonAttrs (_old: {
+    doCheck = false;
+    doInstallCheck = false;
+    nativeCheckInputs = [ ];
+  });
+}
+
 # backrefs' test_timeout asserts that a regex operation exceeds a wall-clock
 # timeout, which does not hold on every builder: it passes locally but fails
 # on CI runners with "DID NOT RAISE TimeoutError". backrefs is not in the
