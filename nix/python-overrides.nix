@@ -1107,7 +1107,12 @@ lib.optionalAttrs useCuda {
 # Disable failing timm test (torch dynamo/inductor test needs setuptools at runtime)
 // lib.optionalAttrs (prev ? timm) {
   timm = prev.timm.overridePythonAttrs (old: {
-    disabledTests = (old.disabledTests or [ ]) ++ [ "test_kron" ];
+    disabledTests = (old.disabledTests or [ ]) ++ [
+      "test_kron"
+      # CPU bf16 backward is unsupported by oneDNN on some x86-64 systems;
+      # all eight cpu-dtype1 parameterizations fail in the Nix build sandbox.
+      "test_naflex_rope_aug_configuration"
+    ];
     # test_optim needs setuptools at runtime (torch dynamo/inductor)
     nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [
       final.setuptools
